@@ -7,6 +7,7 @@ dnssec/Makefile.am
 dnssec/man/Makefile.am
 dnssec/tests/Makefile.am
 dnssec/utils/Makefile.am
+dnssec/
 doc/Makefile.am
 doc/configuration.rst
 doc/index.rst
@@ -367,3 +368,4 @@ src/knot/zone/node-ref.c
 src/knot/zone/node-ref.h
 src/knot/zone/adjust.h
 src/knot/zone/adjust.c
+src/knot/zone/node-ref.h
