@@ -252,7 +252,7 @@ int event_reload(zone_t *zone)
 	assert(zone);
 
 	/* Take zone file mtime and load it. */
-#warning lost the mtime
+#warning lost the mtime WHY? let's look at the diff
 	const time_t mtime = zonefile_mtime(zone->conf->file);
 	zone_update_t up;
 	int ret = zone_update_init(&up, zone, UPDATE_FULL | UPDATE_SIGN);
@@ -274,7 +274,7 @@ int event_reload(zone_t *zone)
 	}
 
 	// Store zone serial.
-	zone->zonefile_serial = zone_update_serial(&up);
+	zone->zonefile_serial = zone_update_current_serial(&up);
 	zone->zonefile_mtime = mtime;
 
 	// Set max UDP payload.
@@ -291,7 +291,8 @@ int event_reload(zone_t *zone)
 
 	/* Schedule zone resign. */
 	if (zone->conf->dnssec_enable) {
-		schedule_dnssec(zone, dnssec_refresh);
+#warning LOST the refresh, CHECK the diff
+		schedule_dnssec(zone, 0);
 	}
 
 	/* Periodic execution. */
@@ -347,7 +348,7 @@ int event_xfer(zone_t *zone)
 	}
 
 	/* Execute zone transfer and reschedule timers. */
-	int ret = zone_query_transfer(zone, master, pkt_type);
+	int ret = zone_query_transfer(zone, zone_master(zone), pkt_type);
 
 	/* Handle failure during transfer. */
 	if (ret != KNOT_EOK) {
