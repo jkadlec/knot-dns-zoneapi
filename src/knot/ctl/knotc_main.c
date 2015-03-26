@@ -720,7 +720,7 @@ static int cmd_checkzone(int argc, char *argv[], unsigned flags)
 			continue;
 		}
 
-#warning do a parser dry run
+#warning do a parser dry run, check the diff
 
 		log_zone_info(zone->name, "zone is valid");
 		zone->conf = NULL;
