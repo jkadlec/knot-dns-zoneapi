@@ -100,7 +100,7 @@ typedef struct journal_t
  * Journal defaults and constants.
  */
 #define JOURNAL_NCOUNT 1024 /*!< Default node count. */
-#define JOURNAL_MAGIC {'k', 'n', 'o', 't', '1', '5', '2'}
+#define JOURNAL_MAGIC {'k', 'n', 'o', 't', '1', '6', '0'}
 #define MAGIC_LENGTH 7
 /* HEADER = magic, crc, max_entries, qhead, qtail */
 #define JOURNAL_HSIZE (MAGIC_LENGTH + sizeof(uint32_t) + sizeof(uint16_t) * 3)
@@ -176,12 +176,11 @@ bool journal_exists(const char *path);
  * \retval KNOT_EBUSY when journal is full.
  * \return < KNOT_EOK on other errors.
  */
-int journal_store_changesets(list_t *src, const char *path, size_t size_limit);
 int journal_store_changeset(changeset_t *change, const char *path, size_t size_limit);
 
+struct zone;
 int journal_load_changesets(const struct zone *zone, changeset_t *ch, uint32_t from, uint32_t to);
 
-/*! \brief Function for unmarking dirty nodes. */
 /*!
  * \brief Function for unmarking dirty nodes.
  * \param path Path to journal file.
