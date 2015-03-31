@@ -38,6 +38,10 @@
  */
 static void rrs_list_clear(list_t *l, mm_ctx_t *mm)
 {
+	if (l == NULL) {
+		return;
+	}
+
 	ptrnode_t *n;
 	node_t *nxt;
 	WALK_LIST_DELSAFE(n, nxt, *l) {
@@ -327,6 +331,10 @@ static int apply_single(zone_contents_t *contents, changeset_t *chset,
 	 * applied (i.e. the origin SOA (soa_from) has the same serial as
 	 * SOA in the zone apex.
 	 */
+
+	if (chset->soa_from == NULL || chset->soa_to == NULL) {
+		return KNOT_EINVAL;
+	}
 
 	// check if serial matches
 	const knot_rdataset_t *soa = node_rdataset(contents->apex, KNOT_RRTYPE_SOA);
