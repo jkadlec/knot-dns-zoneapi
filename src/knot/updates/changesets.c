@@ -44,7 +44,7 @@ static int add_rr_to_zone(zone_contents_t *z, knot_rrset_t **soa, const knot_rrs
 
 static zone_node_t *get_node(namedb_iter_t *iter, const namedb_api_t *api)
 {
-	namedb_val_t val;
+	namedb_val_t val = { '\0' };
 	int ret = api->iter_val(iter, &val);
 	if (ret == KNOT_EOK) {
 		return val.data;
@@ -53,49 +53,50 @@ static zone_node_t *get_node(namedb_iter_t *iter, const namedb_api_t *api)
 	}
 }
 
-static bool iter_finished(namedb_iter_t *it, const namedb_api_t *api)
-{
-	return get_node(it, api) == NULL;
-}
-
 struct part_iter {
-	namedb_txn_t *tx;
-	namedb_t *iter;
-	const namedb_api_t *api;
+	node_t n;
+	namedb_txn_t tx;
+	namedb_iter_t *iter;
 };
 
 static struct part_iter *create_iter_part_from(const namedb_api_t *api, namedb_t *db, bool sorted)
 {
 	struct part_iter *part = malloc(sizeof(*part));
-	if (part) {
-		part->api = api;
-		int ret = api->txn_begin(db, part->tx, NAMEDB_RDONLY);
-		if (ret != KNOT_EOK) {
-			free(part);
-			return NULL;
-		}
-		part->iter = api->iter_begin(part->tx, sorted ? NAMEDB_SORTED : 0);
+	if (part == NULL) {
+		return NULL;
+	}
+
+	memset(part, 0, sizeof(*part));
+	int ret = api->txn_begin(db, &part->tx, NAMEDB_RDONLY);
+	if (ret != KNOT_EOK) {
+		free(part);
+		return NULL;
+	}
+
+	part->iter = api->iter_begin(&part->tx, sorted ? NAMEDB_SORTED : 0);
+	if (part->iter == NULL) {
+		free(part);
+		return NULL;
 	}
 
 	return part;
 }
 
-static void free_iter_part(struct part_iter *part)
+static void free_iter_part(struct part_iter *part, const namedb_api_t *api)
 {
-	part->api->iter_finish(part->iter);
-	part->api->txn_abort(part->tx);
+	api->iter_finish(part->iter);
+	// Iterations are read-only.
+	api->txn_abort(&part->tx);
 	free(part);
 }
 
 /*! \brief Cleans up trie iterations. */
-static void cleanup_iter_list(list_t *l)
+static void cleanup_iter_list(list_t *l, const namedb_api_t *api)
 {
-	ptrnode_t *n, *nxt;
-	WALK_LIST_DELSAFE(n, nxt, *l) {
-		struct part_iter *p = (struct part_iter *)n->d;
-		free_iter_part(p);
-		rem_node(&n->n);
-		free(n);
+	struct part_iter *part, *nxt;
+	WALK_LIST_DELSAFE(part, nxt, *l) {
+		rem_node(&part->n);
+		free_iter_part(part, api);
 	}
 	init_list(l);
 }
@@ -107,22 +108,20 @@ static int changeset_iter_init(changeset_iter_t *ch_it, const namedb_api_t *api,
 {
 	memset(ch_it, 0, sizeof(*ch_it));
 	init_list(&ch_it->iters);
+	ch_it->api = api;
 
 	va_list args;
 	va_start(args, tries);
 
 	for (size_t i = 0; i < tries; ++i) {
-		namedb_t *db = va_arg(args, namedb_t *);
-		if (db) {
+		zone_tree_t *t = va_arg(args, zone_tree_t *);
+		if (t) {
+			namedb_t *db = t->db;
 			struct part_iter *p = create_iter_part_from(api, db, sorted);
 			if (p == NULL) {
 				return KNOT_ENOMEM;
 			}
-			if (ptrlist_add(&ch_it->iters, p, NULL) == NULL) {
-				free_iter_part(p);
-				cleanup_iter_list(&ch_it->iters);
-				return KNOT_ENOMEM;
-			}
+			add_head(&ch_it->iters, &p->n);
 		}
 	}
 
@@ -132,36 +131,48 @@ static int changeset_iter_init(changeset_iter_t *ch_it, const namedb_api_t *api,
 }
 
 /*! \brief Gets next node from trie iterators. */
-static void iter_next_node(changeset_iter_t * ch_it, namedb_iter_t *db_it)
+static void iter_next_node(changeset_iter_t * ch_it, namedb_iter_t **db_it)
 {
-	// Get next node, but not for the very first call.
 	if (ch_it->node) {
-		ch_it->api->iter_next(db_it);
+		*db_it = ch_it->api->iter_next(*db_it);
 	}
 
-	if (iter_finished(db_it, ch_it->api)) {
+	if (*db_it == NULL) {
 		ch_it->node = NULL;
 		return;
 	}
 
-	ch_it->node = get_node(db_it, ch_it->api);
-	assert(ch_it->node);
+	ch_it->node = get_node(*db_it, ch_it->api);
 	while (ch_it->node && ch_it->node->rrset_count == 0) {
-		// Skip empty non-terminals.
-		ch_it->api->iter_next(db_it);
-		ch_it->node = get_node(db_it, ch_it->api);
+		// Skip empty nodes, we only care about RRs.
+		*db_it = ch_it->api->iter_next(*db_it);
+		if (*db_it) {
+			ch_it->node = get_node(*db_it, ch_it->api);
+		} else {
+			ch_it->node = NULL;
+		}
 	}
 
 	ch_it->node_pos = 0;
 }
 
-/*! \brief Gets next RRSet from trie iterators. */
-static knot_rrset_t get_next_rr(changeset_iter_t *ch_it, namedb_iter_t *db_it)
+static bool need_next_node(changeset_iter_t *ch_it)
 {
-	if (ch_it->node == NULL || ch_it->node_pos == ch_it->node->rrset_count) {
+	if (ch_it->node == NULL) {
+		return true;
+	} else {
+		// Test whether we've iterated over all the RRSets in node.
+		return ch_it->node_pos == ch_it->node->rrset_count;
+	}
+}
+
+/*! \brief Gets next RRSet from trie iterators. */
+static knot_rrset_t get_next_rr(changeset_iter_t *ch_it, namedb_iter_t **db_it)
+{
+	if (need_next_node(ch_it)) {
 		iter_next_node(ch_it, db_it);
 		if (ch_it->node == NULL) {
-			assert(iter_finished(db_it, ch_it->api));
+			// Done with iteration.
 			knot_rrset_t rr;
 			knot_rrset_init_empty(&rr);
 			return rr;
@@ -169,6 +180,20 @@ static knot_rrset_t get_next_rr(changeset_iter_t *ch_it, namedb_iter_t *db_it)
 	}
 
 	return node_rrset_at(ch_it->node, ch_it->node_pos++);
+}
+
+static bool intersection_exists(const knot_rrset_t *node_rr, const knot_rrset_t *inc_rr)
+{
+	knot_rdataset_t intersection;
+	knot_rdataset_init(&intersection);
+	int ret = knot_rdataset_intersect(&node_rr->rrs, &inc_rr->rrs, &intersection, NULL);
+	if (ret != KNOT_EOK) {
+		return false;
+	}
+	const uint16_t rr_count = intersection.rr_count;
+	knot_rdataset_clear(&intersection, NULL);
+
+	return rr_count > 0;
 }
 
 static bool need_to_insert(zone_contents_t *counterpart, const knot_rrset_t *rr)
@@ -183,17 +208,23 @@ static bool need_to_insert(zone_contents_t *counterpart, const knot_rrset_t *rr)
 	}
 
 	knot_rrset_t node_rr = node_rrset(node, rr->type);
-	if (!knot_rrset_equal(rr, &node_rr, KNOT_RRSET_COMPARE_WHOLE)) {
+	if (!intersection_exists(&node_rr, rr)) {
 		return true;
 	}
 
-	// Clear the data from the other part of the changeset.
-	knot_rdataset_t *to_free = node_rdataset(node, rr->type);
-	assert(to_free);
-	node_remove_rdataset(node, rr->type);
-	knot_rdataset_clear(to_free, &counterpart->mm);
+	// Subtract the data from node's RRSet.
+	int ret = knot_rdataset_subtract(&node_rr.rrs, &rr->rrs, NULL);
+	if (ret != KNOT_EOK) {
+		return true;
+	}
+
+	if (knot_rrset_empty(&node_rr)) {
+		// Remove empty type.
+		node_remove_rdataset(node, rr->type);
+	}
 
 	if (node->rrset_count == 0) {
+		// Remove empty node.
 		zone_tree_t *t = zone_contents_rrset_is_nsec3rel(rr) ? counterpart->nsec3_nodes :
 		                                                       counterpart->nodes;
 		zone_contents_delete_empty_node(counterpart, t, node);
@@ -332,7 +363,7 @@ int changeset_iter_add(changeset_iter_t *itt, const changeset_t *ch, bool sorted
 
 int changeset_iter_rem(changeset_iter_t *itt, const changeset_t *ch, bool sorted)
 {
-	return changeset_iter_init(itt, ch->add->nodes->api, sorted, 2,
+	return changeset_iter_init(itt, ch->remove->nodes->api, sorted, 2,
 	                           ch->remove->nodes, ch->remove->nsec3_nodes);
 }
 
@@ -346,29 +377,29 @@ int changeset_iter_all(changeset_iter_t *itt, const changeset_t *ch, bool sorted
 knot_rrset_t changeset_iter_next(changeset_iter_t *it)
 {
 	assert(it);
-	ptrnode_t *n = NULL;
-	knot_rrset_t rr;
-	knot_rrset_init_empty(&rr);
-	WALK_LIST(n, it->iters) {
-		namedb_iter_t *db_it = (namedb_iter_t *)n->d;
-		if (iter_finished(db_it, it->api)) {
+	struct part_iter *part;
+	WALK_LIST(part, it->iters) {
+		if (part->iter == NULL) {
+			// Iteration done.
 			continue;
 		}
 
-		rr = get_next_rr(it, db_it);
+		knot_rrset_t rr = get_next_rr(it, &part->iter);
 		if (!knot_rrset_empty(&rr)) {
 			// Got valid RRSet.
 			return rr;
 		}
 	}
 
-	return rr;
+	knot_rrset_t empty_rr;
+	knot_rrset_init_empty(&empty_rr);
+	return empty_rr;
 }
 
 void changeset_iter_clear(changeset_iter_t *it)
 {
 	if (it) {
-		cleanup_iter_list(&it->iters);
+		cleanup_iter_list(&it->iters, it->api);
 		it->node = NULL;
 		it->node_pos = 0;
 	}
