@@ -132,6 +132,9 @@ static int copy_signatures(zone_update_t *from, zone_update_t *to)
 	const bool read_only = false;
 	int ret = zone_update_iter_nsec3(&it, from, read_only);
 	if (ret != KNOT_EOK) {
+		if (ret == KNOT_ENOENT) {
+			return KNOT_EOK;
+		}
 		return ret;
 	}
 
@@ -514,6 +517,9 @@ static int update_diff_nsec3(zone_update_t *old_zone, zone_update_t *nsec3_nodes
 	const bool read_only = true;
 	int ret = zone_update_iter_nsec3(&it, old_zone, read_only);
 	if (ret != KNOT_EOK) {
+		if (ret == KNOT_ENOENT) {
+			return KNOT_EOK;
+		}
 		return ret;
 	}
 
