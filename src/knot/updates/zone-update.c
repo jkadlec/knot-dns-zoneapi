@@ -218,8 +218,13 @@ static int init_incremental(zone_update_t *update, zone_t *zone)
 		return ret;
 	}
 	assert(zone->contents);
-	update->new_cont = zone->contents;
-	
+
+	update->synth_nodes = zone_contents_new(zone->name);
+	if (update->synth_nodes == NULL) {
+		return KNOT_ENOMEM;
+		zone_update_clear(update);
+	}
+
 	return KNOT_EOK;
 }
 
@@ -229,7 +234,7 @@ static int init_full(zone_update_t *update, zone_t *zone)
 	if (update->new_cont == NULL) {
 		return KNOT_ENOMEM;
 	}
-	
+
 	return KNOT_EOK;
 }
 
@@ -316,8 +321,8 @@ int zone_update_init(zone_update_t *update, zone_t *zone, zone_update_flags_t fl
 	memset(update, 0, sizeof(*update));
 	update->zone = zone;
 
-	mm_ctx_mempool(&update->mm, 4096);
-	update->flags = 0;
+	mm_ctx_mempool(&update->mm, MM_DEFAULT_BLKSIZE);
+	update->flags = flags;
 
 	if (flags & UPDATE_INCREMENTAL) {
 		return init_incremental(update, zone);
@@ -335,13 +340,11 @@ const zone_node_t *zone_update_get_node(zone_update_t *update, const knot_dname_
 	if (update == NULL || dname == NULL) {
 		return NULL;
 	}
-
-	const zone_node_t *old_node = get_node(update->new_cont, dname, type);
 	if (update->flags & UPDATE_FULL) {
-		// No changeset, no changes.
-		return old_node;
+		return get_node(update->new_cont, dname, type);
 	}
-	
+
+	const zone_node_t *old_node = get_node(update->zone->contents, dname, type);
 	const zone_node_t *add_node = get_node(update->change.add, dname, type);
 	const zone_node_t *rem_node = get_node(update->change.remove, dname, type);
 	const bool have_change = !node_empty(add_node) || !node_empty(rem_node);
@@ -455,10 +458,12 @@ bool zone_update_has_children(zone_update_t *update, const knot_dname_t *parent)
 
 static const zone_node_t *get_parent(zone_update_t *update, const knot_dname_t *owner)
 {
-	const knot_dname_t *par_owner = knot_wire_next_label(owner, NULL);
-	if (par_owner == NULL) {
+	if (*owner == '\0' || knot_dname_is_equal(owner, update->zone->name)) {
 		return NULL;
 	}
+
+	const knot_dname_t *par_owner = knot_wire_next_label(owner, NULL);
+	assert(par_owner);
 
 	return zone_update_get_node(update, par_owner, KNOT_RRTYPE_ANY);
 }
@@ -577,8 +582,8 @@ int zone_update_remove(zone_update_t *update, const knot_rrset_t *rrset)
 	} else if (update->flags & UPDATE_INCREMENTAL) {
 		return changeset_rem_rrset(&update->change, rrset);
 	} else {
-		// Removing from zone during creation does not make sense.
-		return KNOT_EINVAL;
+		// Removing from zone during creation does not make sense, ignore.
+		return zone_contents_remove_rr(update->new_cont, rrset);
 	}
 }
 
@@ -689,9 +694,39 @@ int zone_update_commit(zone_update_t *update)
 		zone_contents_deep_free(&old_contents);
 	}
 
-	update_cleanup(&update->change);
+#warning !
+//	update_cleanup(&update->change);
 
 	return KNOT_EOK;
+}
+
+static void select_smaller_node(zone_update_iter_t *it)
+{
+#warning this cannot get called if itt is done, but next never returns KNOT_ENOENT
+	if (it->t_node && it->ch_node) {
+		// Choose 'smaller' node to return.
+		if (knot_dname_cmp(it->t_node->owner, it->ch_node->owner) <= 0) {
+			// Return the synthesized node.
+			it->next_n = it->t_node;
+			it->t_node = NULL;
+		} else {
+			// Return the new node.
+			it->next_n = it->ch_node;
+			it->ch_node = NULL;
+		}
+	} else {
+		// Return the remaining node.
+		if (it->t_node) {
+			it->next_n = it->t_node;
+			it->t_node = NULL;
+		} else if (it->ch_node) {
+			it->next_n = it->ch_node;
+			it->ch_node = NULL;
+		} else {
+			// Iteration done.
+			it->next_n = NULL;
+		}
+	}
 }
 
 static int init_writing_iteration(zone_update_t *update)
@@ -714,20 +749,30 @@ static int init_writing_iteration(zone_update_t *update)
 #define init_iter_with_tree(it, update, tree) \
 	memset(it, 0, sizeof(*it)); \
 	it->up = update; \
-	it->t_it = hattrie_iter_begin(update->zone->contents->tree->db, true); \
+	zone_contents_t *_contents = NULL; \
+	if (update->zone->contents == NULL) { \
+		_contents = update->new_cont; \
+	} else { \
+		_contents = update->zone->contents; \
+	} \
+	it->t_it = hattrie_iter_begin(_contents->tree->db, true); \
 	if (it->t_it == NULL) { \
 		return KNOT_ENOMEM; \
 	} \
 	if (update->flags & UPDATE_INCREMENTAL) { \
-		it->ch_it = hattrie_iter_begin(update->change.add->tree->db, true); \
-		if (it->ch_it == NULL) { \
-			hattrie_iter_free(it->t_it); \
-			return KNOT_ENOMEM; \
+		if (update->change.add->tree) { \
+			it->ch_it = hattrie_iter_begin(update->change.add->tree->db, true); \
+			if (it->ch_it == NULL) { \
+				hattrie_iter_free(it->t_it); \
+				return KNOT_ENOMEM; \
+			} \
+		} else { \
+			it->ch_it = NULL; \
 		} \
 	} else { \
 		it->ch_it = NULL; \
 	} \
-	return KNOT_EOK;
+	assert(it->ch_it || it->t_it); \
 
 static int init_iter(zone_update_iter_t *it, zone_update_t *update, const bool read_only, const bool nsec3)
 {
@@ -738,12 +783,24 @@ static int init_iter(zone_update_iter_t *it, zone_update_t *update, const bool r
 		}
 	}
 
+	it->nsec3 = nsec3;
 	if (nsec3) {
 		init_iter_with_tree(it, update, nsec3_nodes);
 	} else {
 		init_iter_with_tree(it, update, nodes);
 	}
-	it->nsec3 = nsec3;
+
+	if (it->ch_it) {
+		it->ch_node = (zone_node_t *)(*hattrie_iter_val(it->ch_it));
+		assert(it->ch_node);
+	}
+	if (it->t_it) {
+		it->t_node = (zone_node_t *)(*hattrie_iter_val(it->t_it));
+		assert(it->t_node);
+	}
+
+	select_smaller_node(it);
+	return KNOT_EOK;
 }
 
 int zone_update_iter(zone_update_iter_t *it, zone_update_t *update, const bool read_only)
@@ -753,71 +810,56 @@ int zone_update_iter(zone_update_iter_t *it, zone_update_t *update, const bool r
 
 int zone_update_iter_nsec3(zone_update_iter_t *it, zone_update_t *update, const bool read_only)
 {
+	if (update->flags & UPDATE_FULL) {
+		if (update->new_cont->nsec3_nodes == NULL) {
+			// No NSEC3 tree.
+			return KNOT_ENOENT;
+		}
+	} else {
+		if (update->change.add->nsec3_nodes == NULL &&
+		    update->change.remove->nsec3_nodes == NULL) {
+			// No NSEC3 changes.
+			return KNOT_ENOENT;
+		}
+	}
+
 	return init_iter(it, update, read_only, true);
 }
 
 static int iter_get_added_node(zone_update_iter_t *it)
 {
+#warning still fishy
+	hattrie_iter_next(it->ch_it);
 	if (hattrie_iter_finished(it->ch_it)) {
 		hattrie_iter_free(it->ch_it);
 		it->ch_it = NULL;
 		return KNOT_ENOENT;
 	}
 
-	hattrie_iter_next(it->t_it);
-	it->ch_node = (zone_node_t *)(*hattrie_iter_val(it->t_it));
+	it->ch_node = (zone_node_t *)(*hattrie_iter_val(it->ch_it));
 
 	return KNOT_EOK;
 }
 
 static int iter_get_synth_node(zone_update_iter_t *it)
 {
+	hattrie_iter_next(it->t_it);
 	if (hattrie_iter_finished(it->t_it)) {
 		hattrie_iter_free(it->t_it);
-		it->ch_it = NULL;
+		it->t_it = NULL;
 		return KNOT_ENOENT;
 	}
 
-	if (it->t_node) {
-		// Don't get next for very first data.
-		hattrie_iter_next(it->t_it);
-	}
-
 	const zone_node_t *n = (zone_node_t *)(*hattrie_iter_val(it->t_it));
-	const uint16_t qtype = it->nsec3 ? KNOT_RRTYPE_NSEC3 : KNOT_RRTYPE_ANY;
-	it->t_node = zone_update_get_node(it->up, n->owner, qtype);
-	if (it->t_node == NULL) {
-		return KNOT_ENOMEM;
+	if (it->up->flags & UPDATE_FULL) {
+		it->t_node = n;
+	} else {
+		const uint16_t qtype = it->nsec3 ? KNOT_RRTYPE_NSEC3 : KNOT_RRTYPE_ANY;
+		it->t_node = zone_update_get_node(it->up, n->owner, qtype);
+#warning can be NULL, will it work?
 	}
 
 	return KNOT_EOK;
-}
-
-static void select_smaller_node(zone_update_iter_t *it)
-{
-#warning this cannot get called if itt is done, but next never returns KNOT_ENOENT
-	if (it->t_node && it->ch_node) {
-		// Choose 'smaller' node to return.
-		if (knot_dname_cmp(it->t_node->owner, it->ch_node->owner) <= 0) {
-			// Return the synthesized node.
-			it->next_n = it->t_node;
-			it->t_node = NULL;
-		} else {
-			// Return the new node.
-			it->next_n = it->ch_node;
-			it->ch_node = NULL;
-		}
-	}
-
-	// Return the remaining node.
-	if (it->t_node) {
-		it->next_n = it->t_node;
-		it->t_node = NULL;
-	} else {
-		assert(it->ch_node);
-		it->next_n = it->ch_node;
-		it->ch_node = NULL;
-	}
 }
 
 int zone_update_iter_next(zone_update_iter_t *it)
@@ -894,6 +936,26 @@ static int merge_changesets(const changeset_t *from, changeset_t *to)
 	return merge_changeset_part(from, changeset_iter_rem, to, changeset_rem_rrset);
 }
 
+static int init_soas(changeset_t *iteration_changes, zone_contents_t *zone)
+{
+	const zone_node_t *apex = zone->apex;
+	knot_rrset_t soa = node_rrset(apex, KNOT_RRTYPE_SOA);
+	assert(!knot_rrset_empty(&soa));
+
+	knot_rrset_t **soas[2] = { &iteration_changes->soa_to, &iteration_changes->soa_from };
+	for (size_t i = 0; i < 2; ++i) {
+		knot_rrset_t **changeset_soa = soas[i];
+		if (*changeset_soa == NULL) {
+			*changeset_soa = knot_rrset_copy(&soa, NULL);
+			if (*changeset_soa == NULL) {
+				return KNOT_ENOMEM;
+			}
+		}
+	}
+
+	return KNOT_EOK;
+}
+
 int zone_update_iter_finish(zone_update_iter_t *it)
 {
 	hattrie_iter_free(it->t_it);
@@ -905,8 +967,18 @@ int zone_update_iter_finish(zone_update_iter_t *it)
 	// Clear the flag no matter the outcome, so that retry is possible.
 	it->up->flags &= ~UPDATE_WRITING_ITER;
 
-	// Store changes done during the iteration to actual changesets.
-	int ret = merge_changesets(&it->up->iteration_changes, &it->up->change);
+	int ret = KNOT_EOK;
+	if (it->up->flags & UPDATE_FULL) {
+		ret = init_soas(&it->up->iteration_changes, it->up->new_cont);
+		if (ret != KNOT_EOK) {
+			return ret;
+		}
+		ret = apply_changeset_directly(it->up->new_cont,
+		                               &it->up->iteration_changes);
+	} else {
+		// Store changes done during the iteration to actual changesets.
+		ret = merge_changesets(&it->up->iteration_changes, &it->up->change);
+	}
 	changeset_clear(&it->up->iteration_changes);
 
 	return ret;
@@ -917,11 +989,12 @@ int zone_update_load_contents(zone_update_t *up)
 	assert(up);
 	assert(up->flags & UPDATE_FULL);
 
-	zloader_t zl = { 0 };
+	zloader_t zl;
 	int ret = zonefile_open(&zl, up->zone->conf->file, up->zone->conf->name);
 	if (ret != KNOT_EOK) {
 		return ret;
 	}
+	zl.creator->up = up;
 
 	/* Set the zone type (master/slave). If zone has no master set, we
 	 * are the primary master for this zone (i.e. zone type = master).
