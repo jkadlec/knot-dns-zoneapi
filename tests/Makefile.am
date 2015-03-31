@@ -50,8 +50,7 @@ check_PROGRAMS = \
 	zone_serial			\
 	zone_timers			\
 	zone_update			\
-	zonedb				\
-	ztree
+	zonedb
 
 check-compile-only: $(check_PROGRAMS)
 
