@@ -92,6 +92,7 @@ zone_node_t *zone_contents_find_node_for_type(const zone_contents_t *zone, const
 
 bool zone_contents_rrset_is_nsec3rel(const knot_rrset_t *rr);
 int zone_contents_add_rr(zone_contents_t *z, const knot_rrset_t *rr);
+int zone_contents_remove_rr(zone_contents_t *z, const knot_rrset_t *rr);
 
 zone_node_t *zone_contents_find_wildcard_child(const zone_contents_t *contents, const knot_dname_t *parent);
 
