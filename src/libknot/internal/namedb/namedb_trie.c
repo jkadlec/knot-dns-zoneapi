@@ -109,8 +109,10 @@ static int find(namedb_txn_t *txn, namedb_val_t *key, namedb_val_t *val, unsigne
 		break;
 	case NAMEDB_FIRST:
 		ret = first_val((hattrie_t *)txn->db);
+		break;
 	case NAMEDB_LAST:
 		ret = hattrie_find_rightmost_node((hattrie_t *)txn->db);
+		break;
 	default:
 		return KNOT_EINVAL;
 	}
