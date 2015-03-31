@@ -359,7 +359,6 @@ tests/zone_serial.c
 tests/zone_timers.c
 tests/zone_update.c
 tests/zonedb.c
-tests/ztree.c
 src/knot/updates/zone-read.h
 src/knot/updates/zone-read.c
 src/knot/updates/zone-lock.c
