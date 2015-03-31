@@ -1,6 +1,8 @@
 #pragma once
 
 #include "knot/server/server.h"
+#include "knot/updates/zone-update.h"
+#include "knot/zone/adjust.h"
 #include "libknot/internal/mempattern.h"
 
 /* Some domain names. */
@@ -37,8 +39,11 @@ static inline void create_root_zone(server_t *server, mm_ctx_t *mm)
 	knot_rrset_free(&soa, mm);
 
 	/* Bake the zone. */
-	zone_node_t *first_nsec3 = NULL, *last_nsec3 = NULL;
-	zone_contents_adjust_full(root->contents, &first_nsec3, &last_nsec3);
+	zone_update_t up;
+	int ret = zone_update_init(&up, root, UPDATE_FULL);
+	assert(ret == KNOT_EOK);
+	ret = zone_adjust_full(&up);
+	assert(ret == KNOT_EOK);
 
 	/* Switch zone db. */
 	knot_zonedb_free(&server->zone_db);
