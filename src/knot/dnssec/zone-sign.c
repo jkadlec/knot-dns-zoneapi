@@ -550,6 +550,7 @@ static int sign_zone_iter(zone_update_iter_t *itt, const zone_keyset_t *zone_key
 		if (ret != KNOT_EOK) {
 			return ret;
 		}
+		node = zone_update_iter_val(itt);
 	}
 
 	return KNOT_EOK;
@@ -565,6 +566,9 @@ static int sign_zone_part(zone_update_t *update,
 	const bool read_only = false;
 	int result = create_iter(&itt, update, read_only);
 	if (result != KNOT_EOK) {
+		if (result == KNOT_ENOENT) {
+			return KNOT_EOK;
+		}
 		return result;
 	}
 	result = sign_zone_iter(&itt, zone_keys, dnssec_ctx, update, expires_at);
