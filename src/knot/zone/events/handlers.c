@@ -274,7 +274,7 @@ int event_reload(zone_t *zone)
 	}
 
 	// Store zone serial.
-	zone->zonefile_serial = zone_update_current_serial(&up);
+	zone->zonefile_serial = zone_contents_serial(zone->contents);
 	zone->zonefile_mtime = mtime;
 
 	// Set max UDP payload.
