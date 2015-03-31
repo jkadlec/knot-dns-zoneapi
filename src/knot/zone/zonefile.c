@@ -77,8 +77,8 @@ static bool handle_err(zcreator_t *zc, const knot_rrset_t *rr, int ret, bool mas
 		// Fail if we're the master for this zone.
 		return !master;
 	} else {
-		ERROR(zname, "failed to process record, owner '%s'",
-		      rrname ? rrname : "unknown");
+		ERROR(zname, "failed to process record, owner '%s' (%s)",
+		      rrname ? rrname : "unknown", knot_strerror(ret));
 		free(rrname);
 		return false;
 	}
