@@ -44,9 +44,10 @@ static void ref_dec(node_ref_t *r)
 	}
 }
 
-static void switch_ref(node_ref_t *from, node_ref_t *to)
+static void switch_ref(node_ref_t *from, node_ref_t **to)
 {
-	while (!__sync_bool_compare_and_swap(&to, to, from));
+#warning double check this
+	while (!__sync_bool_compare_and_swap(to, *to, from));
 }
 
 static node_ref_t *fetch_node_ref(zone_node_t *n)
@@ -75,6 +76,10 @@ static zone_node_t *get_prev(zone_read_t *zr, const knot_dname_t *owner, const b
 static zone_node_t *get_parent(zone_read_t *zr, const knot_dname_t *owner, const bool nsec3)
 {
 	UNUSED(nsec3);
+	if (*owner == '\0' == knot_dname_is_equal(zr->zone->name, owner)) {
+		return NULL;
+	}
+
 	const knot_dname_t *parent = knot_wire_next_label(owner, NULL);
 	if (parent == NULL) {
 		return NULL;
@@ -88,12 +93,6 @@ static zone_node_t *get_apex(zone_read_t *zr, const knot_dname_t *owner, const b
 	UNUSED(owner);
 	UNUSED(nsec3);
 	return (zone_node_t *)zone_read_apex(zr);
-}
-
-static zone_node_t *get_additional(zone_read_t *zr, const knot_dname_t *glue, const bool nsec3)
-{
-	UNUSED(nsec3);
-	return (zone_node_t *)zone_read_node_for_type(zr, glue, KNOT_RRTYPE_ANY);
 }
 
 static zone_node_t *get_nsec3(zone_read_t *zr, const knot_dname_t *owner, const bool nsec3)
@@ -115,84 +114,71 @@ static zone_node_t *get_nsec3(zone_read_t *zr, const knot_dname_t *owner, const 
 	return NULL;
 }
 
-static zone_node_t *return_node(node_ref_t *r, ref_get_t get_func, const knot_dname_t *key, zone_read_t *zone_reader, bool nsec3)
+static zone_node_t *return_node(node_ref_t **r, ref_get_t get_func, const knot_dname_t *key, zone_read_t *zone_reader, bool nsec3)
 {
 	assert(r && get_func);
-	if (r && node_ref_valid(r)) {
-		return r->n;
+	if (node_ref_valid(*r)) {
+		return ((*r)->n);
 	} else {
 		node_ref_t *found_ref = fetch_node_ref(get_func(zone_reader, key, nsec3));
 		ref_inc(found_ref);
-		switch_ref(r, found_ref);
-		ref_dec(r);
-		return found_ref ? found_ref->n : NULL;
+		node_ref_t *old_ref = *r;
+		switch_ref(found_ref, r);
+		ref_dec(old_ref);
+		return *r ? (*r)->n : NULL;
 	}
 }
 
 struct zone_node *node_ref_get(const struct zone_node *const_n, enum node_ref_type type, zone_read_t *zone_reader)
 {
 	zone_node_t *n = (zone_node_t *)const_n;
-	node_ref_t *r = NULL;
+	assert(n);
+	node_ref_t **r = NULL;
 	ref_get_t get_func = NULL;
 	switch(type) {
 	case REF_PREVIOUS:
-		r = n->prev;
+		r = &n->prev;
 		get_func = get_prev;
+		break;
 	case REF_PARENT:
-		r = n->parent;
+		r = &n->parent;
 		get_func = get_parent;
+		break;
 	case REF_NSEC3:
-		r = n->nsec3_node;
+		r = &n->nsec3_node;
 		get_func = get_nsec3;
+		break;
 	default:
 		assert(0);
 		r = NULL;
 	}
 
+	assert(get_func);
 	return return_node(r, get_func, n->owner, zone_reader, false);
-}
-
-static void fix_additional_ref(node_ref_t *ref, const knot_dname_t *key, zone_read_t *zone_reader)
-{
-	return_node(ref, get_additional, key, zone_reader, false);
-}
-
-void fix_additional_refs(knot_rrset_t *rr, zone_read_t *zone_reader)
-{
-	if (!knot_rrtype_additional_needed(rr->type)) {
-		return;
-	}
-
-	const size_t additional_count = rr->rrs.rr_count;
-	node_ref_t **refs = rr->additional;
-	assert(refs);
-	for (size_t i = 0; i < additional_count; ++i) {
-		node_ref_t *ref = refs[i];
-		if (!node_ref_valid(ref)) {
-			fix_additional_ref(ref,
-			                   knot_rdata_name(&rr->rrs, i, rr->type),
-			                   zone_reader);
-			assert(node_ref_valid(ref));
-		}
-	}
 }
 
 bool node_ref_valid(node_ref_t *ref)
 {
-	return __sync_add_and_fetch(&ref->flags, 0) & REF_VALID;
+	if (__sync_add_and_fetch(&ref, 0) != NULL) {
+		return __sync_add_and_fetch(&ref->flags, 0) & REF_VALID;
+	} else {
+		return false;
+	}
 }
 
 struct zone_node *node_ref_get_nsec3(const struct zone_node *n, enum node_ref_type type, zone_read_t *zone_reader)
 {
-	node_ref_t *r = NULL;
+	node_ref_t **r = NULL;
 	ref_get_t get_func = NULL;
 	switch(type) {
 	case REF_PREVIOUS:
-		r = n->prev;
+		r = &n->prev;
 		get_func = get_prev;
+		break;
 	case REF_PARENT:
-		r = n->parent;
+		r = &n->parent;
 		get_func = get_apex;
+		break;
 	case REF_NSEC3:
 	default:
 		assert(0);
