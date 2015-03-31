@@ -491,26 +491,7 @@ dbg_ns_exec_verb(
 		return KNOT_ERROR; /* servfail */
 	}
 
-	const zone_node_t *prev_new = previous;
-
-	while (knot_dname_cmp(prev_new->owner, wildcard) > 0) {
-dbg_ns_exec_verb(
-		char *name = knot_dname_to_str_alloc(prev_new->owner);
-		dbg_ns_verb("Previous node: %s\n", name);
-		free(name);
-);
-		assert(prev_new != zone_read_apex(zr));
-		prev_new = node_ref_get(prev_new, REF_PREVIOUS, zr);
-	}
-	assert(knot_dname_cmp(prev_new->owner, wildcard) < 0);
-
-dbg_ns_exec_verb(
-	char *name = knot_dname_to_str_alloc(prev_new->owner);
-	dbg_ns_verb("Previous node: %s\n", name);
-	free(name);
-);
-
-	/* Directly discard dname. */
+	const zone_node_t *prev_new = zone_read_previous_for_type(zr, wildcard, KNOT_RRTYPE_ANY);
 	knot_dname_free(&wildcard, NULL);
 
 	if (prev_new != previous) {
