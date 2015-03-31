@@ -376,7 +376,11 @@ size_t hattrie_weight (const hattrie_t *T)
 hattrie_t* hattrie_create_n(unsigned bucket_size, const mm_ctx_t *mm)
 {
     hattrie_t* T = mm_alloc((mm_ctx_t *)mm, sizeof(hattrie_t));
-    memcpy(&T->mm, mm, sizeof(mm_ctx_t));
+    if (mm) {
+        memcpy(&T->mm, mm, sizeof(mm_ctx_t));
+    } else {
+        mm_ctx_init(&T->mm);
+    }
     hattrie_init(T, bucket_size);
     return T;
 }
