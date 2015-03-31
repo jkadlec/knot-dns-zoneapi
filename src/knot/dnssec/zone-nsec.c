@@ -62,6 +62,9 @@ static int delete_nsec3_chain(zone_update_t *update)
 	const bool read_only = false;
 	int result = zone_update_iter_nsec3(&itt, update, read_only);
 	if (result != KNOT_EOK) {
+		if (result == KNOT_ENOENT) {
+			return KNOT_EOK;
+		}
 		return result;
 	}
 	const zone_node_t *n = zone_update_iter_val(&itt);
@@ -73,6 +76,7 @@ static int delete_nsec3_chain(zone_update_t *update)
 		if (result != KNOT_EOK) {
 			break;
 		}
+		n = zone_update_iter_val(&itt);
 	}
 
 	if (result != KNOT_EOK) {
