@@ -225,7 +225,6 @@ static void test_store_load(const char *jfilename)
 	ret = journal_load_changesets(&z, &l, 0, 1);
 	ok(ret == KNOT_EOK && changesets_eq(TAIL(l), &ch), "journal: load changeset");
 	changeset_clear(&ch);
-	changesets_free(&l);
 	init_list(&l);
 
 	/* Fill the journal. */
@@ -241,7 +240,6 @@ static void test_store_load(const char *jfilename)
 	/* Load all changesets stored until now. */
 	serial--;
 	ret = journal_load_changesets(&z, &l, 0, serial);
-	changesets_free(&l);
 	ok(ret == KNOT_EOK, "journal: load changesets");
 
 	/* Flush the journal. */
@@ -257,7 +255,6 @@ static void test_store_load(const char *jfilename)
 	/* Load all changesets, except the first one that got evicted. */
 	init_list(&l);
 	ret = journal_load_changesets(&z, &l, 1, serial + 1);
-	changesets_free(&l);
 	ok(ret == KNOT_EOK, "journal: load changesets after flush");
 }
 

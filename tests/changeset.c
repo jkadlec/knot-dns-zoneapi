@@ -17,12 +17,13 @@
 #include <config.h>
 #include <assert.h>
 #include <tap/basic.h>
+#include <libknot/errcode.h>
 
 #include "knot/updates/changesets.h"
 
 int main(int argc, char *argv[])
 {
-	plan(23);
+	plan_lazy();
 
 	// Test with NULL changeset
 	ok(changeset_size(NULL) == 0, "changeset: NULL size");
@@ -134,21 +135,10 @@ int main(int argc, char *argv[])
 	ret = changeset_rem_rrset(ch2, apex_txt_rr);
 	assert(ret == KNOT_EOK);
 
-	// Test merge.
-	ret = changeset_merge(ch, ch2);
-	ok(ret == KNOT_EOK && changeset_size(ch) == 6, "changeset: merge");
-
 	// Test cleanup.
 	changeset_clear(ch);
 	ok(changeset_empty(ch), "changeset: clear");
 	free(ch);
-
-	list_t chgs;
-	init_list(&chgs);
-	add_head(&chgs, &ch2->n);
-	changesets_clear(&chgs);
-	ok(changeset_empty(ch2), "changeset: clear list");
-	free(ch2);
 
 	knot_rrset_free(&apex_txt_rr, NULL);
 	knot_rrset_free(&apex_spf_rr, NULL);
