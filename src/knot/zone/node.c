@@ -85,28 +85,6 @@ static bool ttl_error(struct rr_data *node_data, const knot_rrset_t *rrset)
 	return inserted_ttl != node_ttl;
 }
 
-static int init_references(zone_node_t *node)
-{
-	#warning this could all be null, leave for now, but this MUST be sorted out
-	node->parent = node_ref_new(NULL);
-	node->nsec3_node = node_ref_new(NULL);
-	node->prev = node_ref_new(NULL);
-	if (node->parent == NULL ||
-	    node->nsec3_node == NULL ||
-	    node->prev == NULL) {
-		free(node->parent);
-		free(node->nsec3_node);
-		free(node->prev);
-		return KNOT_ENOMEM;
-	}
-
-	node_ref_invalidate(node->parent);
-	node_ref_invalidate(node->nsec3_node);
-	node_ref_invalidate(node->prev);
-
-	return KNOT_EOK;
-}
-
 zone_node_t *node_new(const knot_dname_t *owner, mm_ctx_t *mm)
 {
 	zone_node_t *ret = mm_alloc(mm, sizeof(zone_node_t));
@@ -114,16 +92,6 @@ zone_node_t *node_new(const knot_dname_t *owner, mm_ctx_t *mm)
 		return NULL;
 	}
 	memset(ret, 0, sizeof(*ret));
-	ret->self_ref = node_ref_new(ret);
-	if (ret->self_ref == NULL) {
-		node_free(&ret, mm);
-		return NULL;
-	}
-	int result = init_references(ret);
-	if (result != KNOT_EOK) {
-		node_free(&ret, mm);
-		return ret;
-	}
 
 	if (owner) {
 		ret->owner = knot_dname_copy(owner, mm);
@@ -156,7 +124,9 @@ void node_free(zone_node_t **node, mm_ctx_t *mm)
 	if (node == NULL || *node == NULL) {
 		return;
 	}
-	node_ref_invalidate((*node)->self_ref);
+	if ((*node)->self_ref) {
+		node_ref_invalidate((*node)->self_ref);
+	}
 	node_ref_release((*node)->self_ref);
 
 	if ((*node)->rrs != NULL) {
